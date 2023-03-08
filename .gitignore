@@ -1,3 +1,5 @@
+.DS_Store
+newdist
 dist
 dist-*
 cabal-dev
