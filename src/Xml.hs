@@ -7,10 +7,10 @@
 
 module Xml where
 
-import Data.List (transpose, intercalate, intersperse, groupBy)
-import Data.List.Split (chunksOf)
 import Text.XML.Light
 import Text.XML.Light.Output
+
+import Debug.Trace (trace)
 
 import Music
 
@@ -22,19 +22,26 @@ attr s e = case findAttrBy (\q -> qName q == s) e of
 children :: String -> Element -> [Element]
 children s = filterChildrenName (\q -> qName q == s)
 
+children2 :: String -> String -> Element -> [Element]
+children2 s1 s2 = filterChildrenName (\q -> qName q == s1 || qName q == s2)
+
 child :: String -> Element -> Maybe Element
 child s e = case (children s e) of
   []      -> Nothing
   (x : _) -> Just x
+
+childR :: [String] -> Element -> Maybe Element
+childR []       _ = Nothing
+childR [x]      e = child x e
+childR (x : xs) e = child x e >>= childR xs
 
 cval :: String -> Element -> String
 cval s e = case (child s e) of
   Nothing -> ""
   Just x  -> strContent x
 
-type MNum     = String
-
-type Measure   = (MNum, [Note])
+cvalR :: [String] -> Element -> Maybe String
+cvalR xs e = fmap strContent (childR xs e)
 
 toInt :: String -> Alter
 toInt "" = 0
@@ -91,34 +98,112 @@ getSlur e = case concatMap getSlur1 (children "notations" e) of
   [SlurStart]           -> SlurStart
   [SlurStop]            -> SlurStop
   [SlurStop, SlurStart] -> SlurStopStart
-  _                     -> undefined
+  [SlurStart,SlurStart] -> SlurStart
+  [SlurStop,SlurStop]   -> SlurStop
+  x                     -> trace ("getSlur: " ++ show x) undefined
   
-note :: Element -> Note
-note e = Note {noteType = parseNoteType (cval "type" e),
-               noteMod = if chord e then Chord
-                         else if dot e then Dotted
-                         else if grace e then GraceStart
-                         else ModNone,
-               slur = getSlur e,
-               tuplet = getTuplet e,
-               numr = numRest e}
+getTie :: Element -> Tie
+getTie e = case child "tie" e of
+    Nothing -> TieNone
+    Just x -> case attr "type" x of
+      "start" -> TieStart
+      "stop"  -> TieStop
+      _       -> TieNone
+
+note :: [Direction] -> Element -> Note
+note ds e = Note {
+  noteType = parseNoteType (cval "type" e),
+  noteMod  = if chord e then Chord
+             else if dot e then Dotted
+             else if grace e then Grace
+             else ModNone,
+  noteDir  = case ds of
+               []      -> DirNone
+               (d : _) -> d,
+  slur     = getSlur e,
+  tie      = getTie  e,
+  tuplet   = getTuplet e,
+  numr     = numRest e }
+
+direction :: Element -> Direction
+direction e = case childR ["direction-type", "dynamics"] e of
+  Nothing -> DirNone
+  Just x  -> case elChildren x of
+    []      -> DirNone
+    (y : _) -> Dynamic (qName (elName y))
+
+notedir :: [Direction] -> Element -> (Maybe Note, [Direction])
+notedir ds e = case qName (elName e) of
+  "direction" -> (Nothing, direction e : ds)
+  _           -> (Just (note ds e), [])
+
+notedirs :: [Direction] -> [Element] -> [Note]
+notedirs ds [] = []
+notedirs ds (x : xs) = case notedir ds x of
+  (Just n, ds')  -> n : notedirs ds' xs
+  (Nothing, ds') -> notedirs ds' xs
+
+-- only handles major keys
+key :: Element -> Maybe Key
+key e = case cvalR ["attributes", "key", "fifths"] e of
+  Nothing -> Nothing
+  Just "1" -> Just KeyG
+  Just "2" -> Just KeyD
+  Just "3" -> Just KeyA
+  Just "4" -> Just KeyE
+  Just "-1" -> Just KeyF
+  Just  _   -> undefined
+
+time :: Element -> Maybe Time
+time e = case (cvalR ["attributes", "time", "beats"] e,
+               cvalR ["attributes", "time", "beat-type"] e) of
+  (Just x, Just y) -> Just (Time x y)
+  _                -> Nothing
+
+tempo :: Element -> Maybe Tempo
+tempo e = case (cvalR ["direction", "direction-type", "metronome", "beat-unit"] e,
+                cvalR ["direction", "direction-type", "metronome", "per-minute"] e) of
+  (Just x, Just y) -> Just (Tempo (parseNoteType  x) y)
+  _                -> Nothing
 
 measure :: Element -> Measure
-measure e = (attr "number" e , map note (children "note" e))
+measure e = Measure {
+  mNumber = attr "number" e,
+  mEmpty  = 0,
+  mKey    = key e,
+  mTime   = time e,
+  mTempo  = tempo e,
+  mNotes  = notedirs [] (children2 "note" "direction" e) }
 
 measures :: Element -> [Measure]
-measures e = map measure (children "measure" e)
+measures e = case (child "part" e) of
+  Nothing -> []
+  Just x  -> map measure (children "measure" x)
 
-part :: [Content] -> Element
-part xs = case (child "part" (onlyElems xs !! 1)) of
-  Nothing -> undefined
-  Just e  -> e
+title :: Element -> String
+title e = case (cvalR ["work", "work-title"] e) of
+  Nothing -> ""
+  Just x  -> x
 
-showMeasure :: Measure -> String
-showMeasure (_,ns) = intercalate "" (map showNote ns)
+composer :: Element -> String
+composer e = case (cvalR ["identification", "creator"] e) of
+  Nothing -> ""
+  Just x  -> x
 
-showMeasures :: [Measure] -> String
-showMeasures ms = intercalate "\n" (map showMeasure ms)
+-- Assumes one part per file
+instrument :: Element -> String
+instrument e = case (cvalR ["part-list", "score-part", "part-name"] e) of
+  Nothing -> ""
+  Just x  -> x
 
-xmlToMeasures :: String -> [Measure]
-xmlToMeasures = measures . part . parseXML
+score :: [Content] -> Score
+score xs =
+  let top = onlyElems xs !! 1
+  in Score {
+    sTitle      = title top,
+    sComposer   = composer top,
+    sInstrument = instrument top,
+    sMeasures   = measures top }
+
+xmlToScore :: String -> Score
+xmlToScore = score . parseXML

@@ -4,19 +4,27 @@ module Main where
 
 import System.Environment (getArgs)
 
+import Music
 import Xml
 
-test = run "/Users/leo/Music/XML/Erhu2.xml" (Just "/Users/leo/Music/XML/in.jianpu")
+prefix :: String
+prefix = "/Users/leo/Music/SCO/Yao Tribe/"
+
+test :: String -> IO ()
+test x = run (prefix ++ x ++ ".musicxml") (Just (prefix ++ x ++ ".jianpu"))
 
 run :: String -> Maybe String -> IO ()
 run file out = do
   s <- readFile file
-  let ms   = xmlToMeasures s
+  let score = xmlToScore s
   case out of
-    Nothing      -> putStrLn $ showMeasures ms
-    Just outFile -> writeFile outFile (showMeasures ms ++ "\n")
+    Nothing      -> putStrLn $ showScore score
+    Just outFile -> writeFile outFile (showScore score ++ "\n")
 
 main :: IO ()
 main = do
   args <- getArgs
-  run (head args) Nothing
+  case args of
+    (x : y : _) -> run x (Just y)
+    (x : _)     -> run x Nothing
+    _           -> putStrLn "Usage: Jianput infile [outfile]"
